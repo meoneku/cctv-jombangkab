@@ -51,6 +51,7 @@ export function MonitorWorkspace() {
 
   const [cameras, setCameras] = useState<CctvCamera[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
+  const [wsSupported, setWsSupported] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -168,6 +169,7 @@ export function MonitorWorkspace() {
       const data = (await res.json()) as CamerasResponse;
       setCameras(data.cameras);
       setCategories(data.categories);
+      setWsSupported(Boolean(data.wsSupported));
     } catch (err) {
       setLoadError(
         err instanceof Error ? err.message : "Gagal terhubung ke server CCTV"
@@ -238,7 +240,7 @@ export function MonitorWorkspace() {
 
   const targetFps = monitorCount <= 4 ? 8 : 6;
   const { wsConnected, metrics, subscribeFrame, reconnectCamera } =
-    useCctvStreams(activeCameraIds, focusId, targetFps);
+    useCctvStreams(activeCameraIds, focusId, targetFps, wsSupported);
 
   const handleChangeMonitorCount = (count: MonitorCount) => {
     setMonitorCount(count);

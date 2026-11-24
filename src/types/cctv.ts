@@ -10,6 +10,7 @@ export interface CctvCamera {
 }
 
 export interface CamerasResponse {
+  wsSupported?: boolean;
   updatedAt: string;
   tokenExpiresAt: string | null;
   total: number;

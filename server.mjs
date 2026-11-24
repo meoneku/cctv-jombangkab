@@ -4,6 +4,8 @@ import { WebSocketServer } from "ws";
 import { getCameraById, getCamerasPayload } from "./src/server/cctvSource.mjs";
 import { MjpegMultiplexer } from "./src/server/mjpegMultiplexer.mjs";
 
+process.env.WS_STREAM_SUPPORTED = "1";
+
 const dev = !process.argv.includes("--prod") && process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST || "0.0.0.0";
 const port = Number(process.env.PORT) || 3000;

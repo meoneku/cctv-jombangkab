@@ -104,6 +104,7 @@ export async function getCamerasPayload(forceRefresh = false) {
       const categories = [...new Set(cameras.map((c) => c.kategori))];
 
       cachedPayload = {
+        wsSupported: true,
         updatedAt: new Date(fetchedAtMs).toISOString(),
         tokenExpiresAt: earliestExpMs
           ? new Date(earliestExpMs).toISOString()
