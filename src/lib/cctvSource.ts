@@ -156,7 +156,7 @@ export async function fetchSingleCameraFrame(
   const tryFetch = async (streamUrl: string) => {
     const urlObj = new URL(streamUrl);
     urlObj.searchParams.set("mode", "single");
-    return httpsGetBuffer(urlObj.toString(), 8000);
+    return httpsGetBuffer(urlObj.toString(), 15000);
   };
 
   let res = await tryFetch(camera.url);

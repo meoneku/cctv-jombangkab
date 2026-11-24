@@ -3,6 +3,7 @@ import { getCamerasPayload } from "@/lib/cctvSource";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const preferredRegion = "sin1";
 
 export async function GET(request: NextRequest) {
   try {

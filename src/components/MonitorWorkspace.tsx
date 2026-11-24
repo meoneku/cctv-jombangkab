@@ -14,13 +14,14 @@ import {
   Sun,
 } from "lucide-react";
 import { CameraSidebar } from "@/components/CameraSidebar";
-import { MonitorTile } from "@/components/MonitorTile";
+import { MonitorTile, type TileStreamMode } from "@/components/MonitorTile";
 import { useCctvStreams } from "@/hooks/useCctvStreams";
 import type {
   CamerasResponse,
   CctvCamera,
   MonitorCount,
   MonitorSlot,
+  StreamStatus,
   ThemePreference,
 } from "@/types/cctv";
 
@@ -28,6 +29,7 @@ const STORAGE_KEY_COUNT = "jombang_cctv_monitor_count_v2";
 const STORAGE_KEY_SLOTS = "jombang_cctv_monitor_slots_v2";
 const STORAGE_KEY_THEME = "jombang_cctv_theme_v1";
 const MAX_MONITORS = 8;
+const MAX_DIRECT_MJPEG_SLOTS = 4;
 
 function createInitialSlots(): MonitorSlot[] {
   return Array.from({ length: MAX_MONITORS }, (_, idx) => ({
@@ -48,6 +50,9 @@ function applyDocumentTheme(pref: ThemePreference) {
 export function MonitorWorkspace() {
   const wallRef = useRef<HTMLDivElement | null>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
 
   const [cameras, setCameras] = useState<CctvCamera[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -66,6 +71,9 @@ export function MonitorWorkspace() {
   const [clockText, setClockText] = useState("");
   const [themePref, setThemePref] = useState<ThemePreference>("system");
   const [systemDark, setSystemDark] = useState(false);
+  const [directStatuses, setDirectStatuses] = useState<
+    Record<number, StreamStatus>
+  >({});
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -170,6 +178,17 @@ export function MonitorWorkspace() {
       setCameras(data.cameras);
       setCategories(data.categories);
       setWsSupported(Boolean(data.wsSupported));
+
+      if (tokenRefreshTimerRef.current) {
+        clearTimeout(tokenRefreshTimerRef.current);
+      }
+      if (data.tokenExpiresAt) {
+        const expMs = new Date(data.tokenExpiresAt).getTime();
+        const refreshDelayMs = Math.max(60000, expMs - Date.now() - 5 * 60000);
+        tokenRefreshTimerRef.current = setTimeout(() => {
+          void fetchCameras(true);
+        }, refreshDelayMs);
+      }
     } catch (err) {
       setLoadError(
         err instanceof Error ? err.message : "Gagal terhubung ke server CCTV"
@@ -182,8 +201,13 @@ export function MonitorWorkspace() {
 
   useEffect(() => {
     if (hydrated) {
-      fetchCameras(false);
+      void fetchCameras(false);
     }
+    return () => {
+      if (tokenRefreshTimerRef.current) {
+        clearTimeout(tokenRefreshTimerRef.current);
+      }
+    };
   }, [hydrated, fetchCameras]);
 
   useEffect(() => {
@@ -239,8 +263,33 @@ export function MonitorWorkspace() {
   }, [visibleSlots]);
 
   const targetFps = monitorCount <= 4 ? 8 : 6;
-  const { wsConnected, metrics, subscribeFrame, reconnectCamera } =
+  const { useWebSocket, wsConnected, metrics, subscribeFrame, reconnectCamera } =
     useCctvStreams(activeCameraIds, focusId, targetFps, wsSupported);
+
+  const handleDirectStatusChange = useCallback(
+    (slotIndex: number, status: StreamStatus) => {
+      setDirectStatuses((prev) => {
+        if (prev[slotIndex] === status) return prev;
+        return { ...prev, [slotIndex]: status };
+      });
+    },
+    []
+  );
+
+  // Membagi mode stream pada non-WebSocket agar maksimal 5 slot memakai MJPEG langsung (di bawah batas 6 koneksi HTTP/1.1) dan sisanya memakai mode=single langsung
+  const slotStreamModes = useMemo(() => {
+    let directSlotOrder = 0;
+    return visibleSlots.map((slot): TileStreamMode => {
+      if (!slot.cameraId || wsSupported === null) return "idle";
+      if (useWebSocket) return "websocket";
+      const mode: TileStreamMode =
+        directSlotOrder < MAX_DIRECT_MJPEG_SLOTS
+          ? "direct-mjpeg"
+          : "direct-single";
+      directSlotOrder += 1;
+      return mode;
+    });
+  }, [visibleSlots, wsSupported, useWebSocket]);
 
   const handleChangeMonitorCount = (count: MonitorCount) => {
     setMonitorCount(count);
@@ -309,9 +358,15 @@ export function MonitorWorkspace() {
       ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-2"
       : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 lg:grid-rows-2";
 
-  const liveCount = activeCameraIds.filter(
-    (id) => metrics[id]?.status === "live"
-  ).length;
+  const assignedSlotsCount = visibleSlots.filter((s) => Boolean(s.cameraId)).length;
+  const liveCount = useWebSocket
+    ? activeCameraIds.filter((id) => metrics[id]?.status === "live").length
+    : visibleSlots.filter(
+        (s) => s.cameraId && directStatuses[s.slotIndex] === "live"
+      ).length;
+  const totalDisplayed = useWebSocket
+    ? activeCameraIds.length
+    : assignedSlotsCount;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]">
@@ -395,7 +450,7 @@ export function MonitorWorkspace() {
               }`}
             />
             <span>
-              {liveCount}/{activeCameraIds.length} Live
+              {liveCount}/{totalDisplayed} Live
             </span>
             <span className="text-[var(--md-sys-color-outline-variant)]">|</span>
             <Clock className="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
@@ -464,7 +519,7 @@ export function MonitorWorkspace() {
               }`}
             >
               <span className="text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-                CCTV Jombang ({liveCount}/{activeCameraIds.length} Live)
+                CCTV Jombang ({liveCount}/{totalDisplayed} Live)
               </span>
               <div className="inline-flex rounded-full bg-[var(--md-sys-color-surface-container-low)] p-0.5">
                 {([4, 6, 8] as MonitorCount[]).map((count) => (
@@ -499,7 +554,7 @@ export function MonitorWorkspace() {
           <div
             className={`grid min-h-0 flex-1 gap-2.5 overflow-y-auto lg:overflow-hidden ${gridClass}`}
           >
-            {visibleSlots.map((slot) => {
+            {visibleSlots.map((slot, idx) => {
               const camera = slot.cameraId
                 ? cameraMap.get(slot.cameraId) ?? null
                 : null;
@@ -508,15 +563,18 @@ export function MonitorWorkspace() {
                   key={slot.slotIndex}
                   slotIndex={slot.slotIndex}
                   camera={camera}
+                  streamMode={slotStreamModes[idx] ?? "idle"}
                   metrics={camera ? metrics[camera.id] : undefined}
                   isSelectedSlot={selectedSlot === slot.slotIndex}
                   isWallFullscreen={isWallFullscreen}
+                  isFocusedCamera={Boolean(camera && focusId === camera.id)}
                   subscribeFrame={subscribeFrame}
                   onSelectSlot={setSelectedSlot}
                   onClearSlot={handleClearSlot}
                   onReconnect={reconnectCamera}
                   onFocusChange={setFocusId}
                   onOpenPicker={handleOpenPicker}
+                  onDirectStatusChange={handleDirectStatusChange}
                 />
               );
             })}

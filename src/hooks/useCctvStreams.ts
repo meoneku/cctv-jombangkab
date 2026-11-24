@@ -20,12 +20,10 @@ export function useCctvStreams(
   subscriptionRef.current = { cameraIds, focusId, maxFps };
 
   const [wsConnected, setWsConnected] = useState(false);
-  const [wsFailedFallback, setWsFailedFallback] = useState(false);
+  const [wsUnavailable, setWsUnavailable] = useState(false);
   const [metrics, setMetrics] = useState<Record<string, StreamMetrics>>({});
-  const [reloadNonce, setReloadNonce] = useState<Record<string, number>>({});
 
-  const useHttpFallback = wsSupported === false || wsFailedFallback;
-  const useWebSocket = wsSupported === true && !wsFailedFallback;
+  const useWebSocket = wsSupported === true && !wsUnavailable;
 
   const sendSubscription = useCallback((ws: WebSocket | null) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -186,7 +184,7 @@ export function useCctvStreams(
         if (!openedOnce) {
           failedAttempts += 1;
           if (failedAttempts >= 2) {
-            setWsFailedFallback(true);
+            setWsUnavailable(true);
             return;
           }
         }
@@ -217,109 +215,8 @@ export function useCctvStreams(
     }
   }, [cameraKey, focusId, maxFps, useWebSocket, sendSubscription]);
 
-  // Mode polling HTTP/2 snapshot otomatis saat server tidak mendukung WebSocket (misalnya Vercel)
-  useEffect(() => {
-    if (!useHttpFallback || cameraIds.length === 0) return;
-
-    let cancelled = false;
-    const controllers = new Map<string, AbortController>();
-
-    const startCameraLoop = async (camId: string) => {
-      let consecutiveErrors = 0;
-      setMetrics((prev) => ({
-        ...prev,
-        [camId]: {
-          status: prev[camId]?.status === "live" ? "live" : "connecting",
-          fps: prev[camId]?.fps ?? 0,
-        },
-      }));
-
-      while (!cancelled) {
-        const controller = new AbortController();
-        controllers.set(camId, controller);
-        try {
-          const res = await fetch(`/api/snapshot/${encodeURIComponent(camId)}`, {
-            cache: "no-store",
-            signal: controller.signal,
-          });
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-          const blob = await res.blob();
-          if (cancelled) return;
-          if (blob.size > 0) {
-            consecutiveErrors = 0;
-            recordFrame(camId, blob);
-          } else {
-            throw new Error("Frame kosong");
-          }
-        } catch {
-          if (cancelled) return;
-          consecutiveErrors += 1;
-          if (consecutiveErrors >= 2) {
-            setMetrics((prev) => ({
-              ...prev,
-              [camId]: {
-                status: "error",
-                fps: 0,
-              },
-            }));
-          }
-        }
-
-        if (cancelled) return;
-        const { focusId: currentFocus, cameraIds: activeList } =
-          subscriptionRef.current;
-        const delayMs =
-          consecutiveErrors > 0
-            ? Math.min(4000, 1000 * consecutiveErrors)
-            : currentFocus === camId
-            ? 120
-            : activeList.length <= 4
-            ? 250
-            : 400;
-
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, delayMs);
-          controller.signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true }
-          );
-        });
-      }
-    };
-
-    cameraIds.forEach((id) => {
-      void startCameraLoop(id);
-    });
-
-    return () => {
-      cancelled = true;
-      for (const ctrl of controllers.values()) {
-        ctrl.abort();
-      }
-      controllers.clear();
-    };
-  }, [useHttpFallback, cameraKey, reloadNonce, recordFrame]);
-
   const reconnectCamera = useCallback(
     (cameraId: string) => {
-      if (useHttpFallback) {
-        setMetrics((prev) => ({
-          ...prev,
-          [cameraId]: { status: "connecting", fps: 0 },
-        }));
-        setReloadNonce((prev) => ({
-          ...prev,
-          [cameraId]: (prev[cameraId] ?? 0) + 1,
-        }));
-        return;
-      }
-
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const withoutTarget = subscriptionRef.current.cameraIds.filter(
@@ -337,11 +234,12 @@ export function useCctvStreams(
         sendSubscription(wsRef.current);
       }, 150);
     },
-    [useHttpFallback, sendSubscription]
+    [sendSubscription]
   );
 
   return {
-    wsConnected: useWebSocket ? wsConnected : useHttpFallback,
+    useWebSocket,
+    wsConnected: useWebSocket ? wsConnected : wsSupported === false || wsUnavailable,
     metrics,
     subscribeFrame,
     reconnectCamera,
