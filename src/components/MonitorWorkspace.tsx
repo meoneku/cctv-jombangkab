@@ -581,6 +581,10 @@ export function MonitorWorkspace() {
           </div>
         </main>
       </div>
+
+      <footer className="flex h-7 shrink-0 items-center justify-center border-t border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-3 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+        Created by MeOne
+      </footer>
     </div>
   );
 }
