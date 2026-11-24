@@ -69,12 +69,14 @@ export function MonitorTile({
   const tileRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const mjpegImgRef = useRef<HTMLImageElement | null>(null);
+  const mjpegFreezeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastBlobRef = useRef<Blob | null>(null);
   const singleFpsRef = useRef({ count: 0, windowStart: 0 });
   const nextNonceRef = useRef(0);
   const directErrorCountRef = useRef(0);
 
   const [hasFrame, setHasFrame] = useState(false);
+  const [isMjpegReconnecting, setIsMjpegReconnecting] = useState(false);
   const [isTileFullscreen, setIsTileFullscreen] = useState(false);
   const [fitContain, setFitContain] = useState(true);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
@@ -101,17 +103,51 @@ export function MonitorTile({
       : streamMode;
 
   useEffect(() => {
-    setUseProxyFallback(false);
-    directErrorCountRef.current = 0;
-  }, [camera?.id, camera?.url, streamMode]);
-
-  useEffect(() => {
     setHasFrame(false);
+    setIsMjpegReconnecting(false);
     setDirectStatus("connecting");
     setDirectFps(0);
+    setUseProxyFallback(false);
+    directErrorCountRef.current = 0;
     lastBlobRef.current = null;
     singleFpsRef.current = { count: 0, windowStart: performance.now() };
-  }, [camera?.id, camera?.url, streamMode, reloadNonce]);
+    const freezeCanvas = mjpegFreezeCanvasRef.current;
+    if (freezeCanvas) {
+      const ctx = freezeCanvas.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, freezeCanvas.width, freezeCanvas.height);
+    }
+  }, [camera?.id, camera?.url, streamMode]);
+
+  const captureMjpegFreezeFrame = () => {
+    const img = mjpegImgRef.current;
+    const freezeCanvas = mjpegFreezeCanvasRef.current;
+    if (!img || !freezeCanvas || !img.complete || img.naturalWidth <= 0) return;
+    if (
+      freezeCanvas.width !== img.naturalWidth ||
+      freezeCanvas.height !== img.naturalHeight
+    ) {
+      freezeCanvas.width = img.naturalWidth;
+      freezeCanvas.height = img.naturalHeight;
+    }
+    const ctx = freezeCanvas.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(img, 0, 0);
+    }
+  };
+
+  // Menyalin frame terakhir MJPEG secara berkala agar saat reconnect gambar tetap tertahan dan tidak menghitam
+  useEffect(() => {
+    if (
+      !camera ||
+      effectiveMode !== "direct-mjpeg" ||
+      !hasFrame ||
+      isMjpegReconnecting
+    ) {
+      return;
+    }
+    const timer = setInterval(captureMjpegFreezeFrame, 400);
+    return () => clearInterval(timer);
+  }, [camera, effectiveMode, hasFrame, isMjpegReconnecting]);
 
   useEffect(() => {
     if (!camera) {
@@ -355,6 +391,10 @@ export function MonitorTile({
       onReconnect(camera.id);
       return;
     }
+    if (effectiveMode === "direct-mjpeg" && hasFrame) {
+      captureMjpegFreezeFrame();
+      setIsMjpegReconnecting(true);
+    }
     setReloadNonce((n) => n + 1);
   };
 
@@ -446,6 +486,16 @@ export function MonitorTile({
         />
       )}
 
+      {(effectiveMode === "direct-mjpeg" ||
+        (effectiveMode === "proxy-snapshot" && hasFrame)) && (
+        <canvas
+          ref={mjpegFreezeCanvasRef}
+          className={`absolute inset-0 z-[1] h-full w-full ${
+            fitContain ? "object-contain" : "object-cover"
+          } ${hasFrame ? "opacity-100" : "opacity-0"}`}
+        />
+      )}
+
       {effectiveMode === "direct-mjpeg" && (
         <img
           ref={mjpegImgRef}
@@ -454,23 +504,26 @@ export function MonitorTile({
           alt={camera.nama}
           onLoad={() => {
             directErrorCountRef.current = 0;
+            setIsMjpegReconnecting(false);
             setHasFrame(true);
             setDirectStatus("live");
+            captureMjpegFreezeFrame();
           }}
           onError={() => {
+            setIsMjpegReconnecting(true);
             directErrorCountRef.current += 1;
-            if (directErrorCountRef.current <= 2) {
+            if (directErrorCountRef.current <= 3) {
               if (singleTimerRef.current) clearTimeout(singleTimerRef.current);
               singleTimerRef.current = setTimeout(() => {
                 setReloadNonce((n) => n + 1);
-              }, 1200);
+              }, 400);
               return;
             }
             setUseProxyFallback(true);
           }}
-          className={`h-full w-full ${
+          className={`relative z-[2] h-full w-full ${
             fitContain ? "object-contain" : "object-cover"
-          }`}
+          } ${isMjpegReconnecting ? "opacity-0" : "opacity-100"}`}
         />
       )}
 
@@ -485,7 +538,7 @@ export function MonitorTile({
               onError={() => handleSingleBufferError(0)}
               className={`absolute inset-0 h-full w-full ${
                 fitContain ? "object-contain" : "object-cover"
-              } ${activeBuf === 0 ? "z-[1] opacity-100" : "z-0 opacity-0"}`}
+              } ${activeBuf === 0 ? "z-[2] opacity-100" : "z-0 opacity-0"}`}
             />
           )}
           {bufUrls[1] && (
@@ -496,14 +549,14 @@ export function MonitorTile({
               onError={() => handleSingleBufferError(1)}
               className={`absolute inset-0 h-full w-full ${
                 fitContain ? "object-contain" : "object-cover"
-              } ${activeBuf === 1 ? "z-[1] opacity-100" : "z-0 opacity-0"}`}
+              } ${activeBuf === 1 ? "z-[2] opacity-100" : "z-0 opacity-0"}`}
             />
           )}
         </>
       )}
 
       {!hasFrame && (
-        <div className="absolute inset-0 z-[2] flex flex-col items-center justify-center gap-2 bg-[var(--md-sys-color-video-bg)] px-4 text-center text-white">
+        <div className="absolute inset-0 z-[3] flex flex-col items-center justify-center gap-2 bg-[var(--md-sys-color-video-bg)] px-4 text-center text-white">
           {status === "error" ? (
             <>
               <VideoOff className="h-8 w-8 text-[#F87171]" />
